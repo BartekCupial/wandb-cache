@@ -101,3 +101,14 @@ Table refresh timings include metadata selection, W&B table artifact downloads, 
 | :--- | ---: | ---: |
 | **GraphQL** | 14.03s | 0.96s |
 | **W&B API** | 57.32s | 1.13s |
+
+
+## Roadmap
+
+- [ ] **History Tracking:** Add full support for downloading, flattening and caching sampled history metrics for a run.
+- [x] **Inline Metadata:** Inject run configs directly into Parquet rows for faster reads.
+- [x] **Parquet Storage:** Migrate from JSON to Parquets, to speedup loading of the data.
+- [x] **Benchmarking:** Add examples and benchmark the library.
+- [x] **Multiprocessing:** Implement parallel workers to get through massive table downloads faster.
+- [x] **Table Artifacts:** Add full support for downloading, flattening, and caching W&B tables.
+- [x] **GraphQL:** Swap the standard W&B runs API for custom GraphQL to massively speed up metadata fetching.
