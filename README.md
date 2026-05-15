@@ -2,6 +2,10 @@
 
 Small cache layer for W&B run metadata and table artifacts.
 
+If you frequently pull W&B data to build pandas DataFrames for local analysis, plotting, or paper figures, you have likely hit bottlenecks with the slow `wandb` runs API. The standard `wandb.Api().runs(...)` call is often slow because it requests a massive data fragment for every run (including system metrics, history keys, and notes) and struggles with expensive server-side filtering on nested `config` fields.
+
+`wandb-cache` solves this by fetching data through a custom, lightweight GraphQL query and caching it in fast Parquet files.
+
 The intended workflow is:
 
 1. Fetch a filtered set of runs from W&B.
@@ -88,12 +92,12 @@ Comparing standard W&B API discovery versus GraphQL discovery, and network downl
 | Method | Network (refresh=True) | Cached (refresh=False) |
 | :--- | ---: | ---: |
 | **GraphQL** | 1.02s | 0.09s |
-| **W&B API** | 45.06s | 0.14s |
+| **W&B API** | 45.06s | 0.12s |
 
 **Table Benchmarks**
 Table refresh timings include metadata selection, W&B table artifact downloads, table row serialization, and Parquet cache saves. Tests were run using 32 parallel workers (`max_workers=32`):
 
 | Method | Network (refresh=True) | Cached (refresh=False) |
 | :--- | ---: | ---: |
-| **GraphQL** | 15.61s | 9.44s |
-| **W&B API** | 57.32s | 9.31s |
+| **GraphQL** | 14.03s | 0.96s |
+| **W&B API** | 57.32s | 1.13s |
