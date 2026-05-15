@@ -73,3 +73,30 @@ python examples/benchmark_speed.py
 ```
 
 These examples use the `ideas-ncbr/plan-crl` project and the `2026_05_13_self_refinement_generic_retry_13x4` tag, so they expect normal W&B auth through `WANDB_API_KEY` or `~/.netrc`.
+
+## Benchmarking results
+
+Command:
+
+```bash
+python examples/benchmark_speed.py
+```
+
+Run on `2026_05_13_self_refinement_generic_retry_13x4` in `ideas-ncbr/plan-crl`: 169 runs and 20,662 table rows.
+
+Metadata download and JSON cache save:
+
+| Variant | Time | Speedup |
+| --- | ---: | ---: |
+| GraphQL metadata | 1.35s | 19.6x |
+| W&B runs API metadata | 26.45s | 1.0x |
+
+Table refresh, JSON cache save included:
+
+| Variant | Time | Speedup |
+| --- | ---: | ---: |
+| 1 worker | 313.99s | 1.0x |
+| 32 workers | 12.09s | 26.0x |
+
+The table refresh timing includes GraphQL metadata selection, W&B table artifact download, table row serialization, and JSON cache save. Network conditions and the local W&B artifact cache can move these numbers around, but the benchmark gives the right scale: GraphQL helps metadata discovery, and parallel workers are the big win for table artifacts.
+

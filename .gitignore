@@ -6,6 +6,7 @@ __pycache__/
 
 .wandb_cache/
 wandb/
+artifacts/
 
 build/
 dist/

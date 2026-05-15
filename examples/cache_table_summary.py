@@ -15,25 +15,42 @@ def main() -> None:
 
     df = cache.table_dataframe(
         filters=FILTERS,
-        refresh_cache=True,
+        refresh_cache=False,
         table_key=TABLE_KEY,
         artifact_name_contains=ARTIFACT_NAME_CONTAINS,
-        missing="skip",
+        missing="raise",
         max_workers=16,
         use_graphql=True,
     )
 
-    summary = pd.DataFrame(
-        [
-            {
-                "runs": df["run_id"].nunique(),
-                "rows": len(df),
-                "solved_at_1": df["solved_at_1"].mean(),
-                "solved_at_10": df["solved_at_10"].mean(),
-            }
-        ]
+    df["solved_at_1"] = (df["solved"] == 1.0) & (df["attempts_used"] <= 1)
+    df["solved_at_10"] = (df["solved"] == 1.0) & (df["attempts_used"] <= 10)
+
+    table = (
+        df.groupby("config.env_name")
+        .agg(
+            runs=("run_id", "nunique"),
+            episodes=("run_id", "size"),
+            acc_at_1=("solved_at_1", "mean"),
+            acc_at_10=("solved_at_10", "mean"),
+        )
+        .reset_index()
+        .rename(columns={"config.env_name": "env"})
     )
-    print(summary.to_string(index=False))
+    table["gain_at_10"] = table["acc_at_10"] - table["acc_at_1"]
+
+    print(f"cached rows: {len(df)}")
+    print()
+    print(
+        table.to_string(
+            index=False,
+            formatters={
+                "acc_at_1": "{:.1%}".format,
+                "acc_at_10": "{:.1%}".format,
+                "gain_at_10": "+{:.1%}".format,
+            },
+        )
+    )
 
 
 if __name__ == "__main__":
