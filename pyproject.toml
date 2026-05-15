@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wandb-cache"
+version = "0.1.0"
+description = "Small cache layer for W&B run metadata and table artifacts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Bartek Cupial" },
+]
+dependencies = [
+    "pandas",
+    "wandb",
+]
+
+[project.urls]
+Homepage = "https://github.com/BartekCupial/wandb-cache"
+
+[project.optional-dependencies]
+dev = [
+    "build",
+    "ruff",
+    "twine",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
