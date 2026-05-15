@@ -4,6 +4,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import pyarrow.parquet as pq
 import pandas as pd
 
 from wandb_cache.cache import ParquetRunCacheStore, ParquetTableCacheStore, default_cache_path, table_cache_path
@@ -215,21 +216,30 @@ class WandbRunCache:
         graphql_filters: dict[str, Any] | None = None,
         graphql_per_page: int = 500,
     ) -> pd.DataFrame:
-        records = self.table_records(
-            filters=filters,
-            refresh_cache=refresh_cache,
-            table_key=table_key,
-            artifact_name_contains=artifact_name_contains,
-            include_summary=include_summary,
-            missing=missing,
-            max_workers=max_workers,
-            use_graphql=use_graphql,
-            graphql_filters=graphql_filters,
-            graphql_per_page=graphql_per_page,
-        )
-        if not records:
-            return pd.DataFrame()
-        return pd.json_normalize(records, sep=".")
+        store = self._table_store(table_key=table_key, artifact_name_contains=artifact_name_contains)
+        if refresh_cache or not store.exists():
+            self.refresh_table(
+                filters=filters,
+                table_key=table_key,
+                artifact_name_contains=artifact_name_contains,
+                include_summary=include_summary,
+                missing=missing,
+                max_workers=max_workers,
+                use_graphql=use_graphql,
+                graphql_filters=graphql_filters,
+                graphql_per_page=graphql_per_page,
+            )
+
+        table = pq.read_table(store.path)
+        df = table.to_pandas()
+        if df.empty:
+            return df
+
+        if "config" in df.columns:
+            config_df = pd.DataFrame(df["config"].tolist()).add_prefix("config.")
+            df = pd.concat([df.drop(columns=["config"]), config_df], axis=1)
+
+        return df
 
     def refresh_history(self, *args: Any, **kwargs: Any) -> None:
         raise NotImplementedError("History caching is not implemented yet.")
