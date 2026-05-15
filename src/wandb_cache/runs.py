@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from wandb_cache.cache import JsonRunCacheStore, JsonTableCacheStore, default_cache_path, table_cache_path
+from wandb_cache.cache import ParquetRunCacheStore, ParquetTableCacheStore, default_cache_path, table_cache_path
 from wandb_cache.filters import matches_filter
 from wandb_cache.graphql import fetch_run_metadata_graphql
 from wandb_cache.json import to_jsonable
@@ -21,7 +21,7 @@ class WandbRunCache:
     ):
         self.project = project
         self.cache_path = default_cache_path(cache_dir=cache_dir, cache=cache, project=project)
-        self.store = JsonRunCacheStore(self.cache_path)
+        self.store = ParquetRunCacheStore(self.cache_path)
         self._api_client = None
 
     def _fetch_runs(self, filters: dict[str, Any] | None = None) -> list[Any]:
@@ -161,7 +161,7 @@ class WandbRunCache:
             include_summary=include_summary,
             records=table_records,
         )
-        return attach_metadata_to_table_records(table_records, metadata_records)
+        return table_records
 
     def table_records(
         self,
@@ -199,8 +199,6 @@ class WandbRunCache:
                     "Refresh the cache to change this."
                 )
             records = payload["records"]
-            metadata_records = self._load_metadata(include_summary=include_summary)
-            records = attach_metadata_to_table_records(records, metadata_records)
 
         return [record for record in records if matches_filter(record, filters)]
 
@@ -236,8 +234,8 @@ class WandbRunCache:
     def refresh_history(self, *args: Any, **kwargs: Any) -> None:
         raise NotImplementedError("History caching is not implemented yet.")
 
-    def _table_store(self, table_key: str, artifact_name_contains: str) -> JsonTableCacheStore:
-        return JsonTableCacheStore(
+    def _table_store(self, table_key: str, artifact_name_contains: str) -> ParquetTableCacheStore:
+        return ParquetTableCacheStore(
             table_cache_path(
                 run_cache_path=self.cache_path,
                 table_key=table_key,
@@ -381,29 +379,13 @@ def download_run_table_from_wandb(task: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def serialize_table_rows(metadata: dict[str, Any], table: Any) -> list[dict[str, Any]]:
+    conflicts = sorted(set(table.columns) & set(metadata))
+    if conflicts:
+        raise ValueError(f"Table columns conflict with run metadata columns: {conflicts}")
+
     records = []
     for row_values in table.data:
         row = {column: to_jsonable(value) for column, value in zip(table.columns, row_values)}
-        conflicting_columns = sorted(set(row) & {"run_id"})
-        if conflicting_columns:
-            raise ValueError(f"Table columns conflict with run metadata columns: {conflicting_columns}")
-        row["run_id"] = metadata["run_id"]
+        row.update(metadata)
         records.append(row)
-    return records
-
-
-def attach_metadata_to_table_records(
-    table_records: list[dict[str, Any]],
-    metadata_records: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    metadata_by_run_id = {metadata["run_id"]: metadata for metadata in metadata_records}
-    records = []
-    for table_record in table_records:
-        metadata = metadata_by_run_id[table_record["run_id"]]
-        conflicts = sorted((set(table_record) & set(metadata)) - {"run_id"})
-        if conflicts:
-            raise ValueError(f"Table columns conflict with run metadata columns: {conflicts}")
-        record = dict(table_record)
-        record.update(metadata)
-        records.append(record)
     return records

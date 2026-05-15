@@ -1,71 +1,69 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Callable, TypeVar
+from typing import Callable, Sized, TypeVar
 
 from wandb_cache import WandbRunCache
-
 
 PROJECT = "ideas-ncbr/plan-crl"
 EXP_NAME = "2026_05_13_self_refinement_generic_retry_13x4"
 FILTERS = {"tags": EXP_NAME}
 TABLE_KEY = "collect/episode_log"
 ARTIFACT_NAME_CONTAINS = "episode_log"
-PARALLEL_WORKERS = 32
+MAX_WORKERS = 32
 
-T = TypeVar("T")
+T = TypeVar("T", bound=Sized)
 
 
-def timed(label: str, fn: Callable[[], T]) -> tuple[T, float]:
+def timed(label: str, fn: Callable[[], T]) -> None:
     start = perf_counter()
-    value = fn()
+    result = fn()
     elapsed = perf_counter() - start
-    print(f"{label}: {elapsed:.2f}s")
-    return value, elapsed
-
-
-def new_cache(name: str) -> WandbRunCache:
-    return WandbRunCache(project=PROJECT, cache=f"benchmark/{EXP_NAME}/{name}")
+    print(f"{label:<45} | {elapsed:>6.2f}s | {len(result)} rows")
 
 
 def main() -> None:
-    metadata_graphql, _ = timed(
-        "metadata download + save, graphql",
-        lambda: new_cache("metadata_graphql").refresh(filters=FILTERS, use_graphql=True),
-    )
-    print(f"metadata graphql runs: {len(metadata_graphql)}")
+    print("--- Metadata Benchmark ---")
+    for graphql in (True, False):
+        cache = WandbRunCache(project=PROJECT, cache=f"benchmark/metadata_gql_{graphql}")
+        
+        timed(
+            f"Metadata (graphql={graphql}, refresh=True)",
+            lambda: cache.dataframe(filters=FILTERS, use_graphql=graphql, refresh_cache=True)
+        )
+        timed(
+            f"Metadata (graphql={graphql}, refresh=False)",
+            lambda: cache.dataframe(filters=FILTERS, use_graphql=graphql, refresh_cache=False)
+        )
 
-    metadata_wandb_api, _ = timed(
-        "metadata download + save, wandb api",
-        lambda: new_cache("metadata_wandb_api").refresh(filters=FILTERS, use_graphql=False),
-    )
-    print(f"metadata wandb api runs: {len(metadata_wandb_api)}")
-
-    table_records_one_worker, _ = timed(
-        "table refresh, 1 worker",
-        lambda: new_cache("tables_1_worker").refresh_table(
-            filters=FILTERS,
-            table_key=TABLE_KEY,
-            artifact_name_contains=ARTIFACT_NAME_CONTAINS,
-            missing="skip",
-            max_workers=1,
-            use_graphql=True,
-        ),
-    )
-    print(f"table rows, 1 worker: {len(table_records_one_worker)}")
-
-    table_records_parallel, _ = timed(
-        f"table refresh, {PARALLEL_WORKERS} workers",
-        lambda: new_cache("tables_32_workers").refresh_table(
-            filters=FILTERS,
-            table_key=TABLE_KEY,
-            artifact_name_contains=ARTIFACT_NAME_CONTAINS,
-            missing="skip",
-            max_workers=PARALLEL_WORKERS,
-            use_graphql=True,
-        ),
-    )
-    print(f"table rows, {PARALLEL_WORKERS} workers: {len(table_records_parallel)}")
+    print("\n--- Table Benchmark ---")
+    for graphql in (True, False):
+        cache = WandbRunCache(project=PROJECT, cache=f"benchmark/table_gql_{graphql}")
+        
+        timed(
+            f"Table (graphql={graphql}, refresh=True)",
+            lambda: cache.table_dataframe(
+                filters=FILTERS,
+                table_key=TABLE_KEY,
+                artifact_name_contains=ARTIFACT_NAME_CONTAINS,
+                missing="skip",
+                max_workers=MAX_WORKERS,
+                use_graphql=graphql,
+                refresh_cache=True,
+            )
+        )
+        timed(
+            f"Table (graphql={graphql}, refresh=False)",
+            lambda: cache.table_dataframe(
+                filters=FILTERS,
+                table_key=TABLE_KEY,
+                artifact_name_contains=ARTIFACT_NAME_CONTAINS,
+                missing="skip",
+                max_workers=MAX_WORKERS,
+                use_graphql=graphql,
+                refresh_cache=False,
+            )
+        )
 
 
 if __name__ == "__main__":
