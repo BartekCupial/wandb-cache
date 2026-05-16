@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import pyarrow.parquet as pq
 import pandas as pd
 
-from wandb_cache.cache import ParquetRunCacheStore, ParquetTableCacheStore, default_cache_path, table_cache_path
+from wandb_cache.cache import (
+    ParquetHistoryCacheStore,
+    ParquetRunCacheStore,
+    ParquetTableCacheStore,
+    default_cache_path,
+    history_cache_path,
+    table_cache_path,
+)
 from wandb_cache.filters import matches_filter
 from wandb_cache.graphql import fetch_run_metadata_graphql
 from wandb_cache.json import to_jsonable
@@ -241,8 +248,70 @@ class WandbRunCache:
 
         return df
 
-    def refresh_history(self, *args: Any, **kwargs: Any) -> None:
-        raise NotImplementedError("History caching is not implemented yet.")
+    def history_dataframe(
+        self,
+        filters: dict[str, Any] | None = None,
+        refresh_cache: bool = False,
+        keys: Sequence[str] | None = None,
+        samples: int = 500,
+        x_axis: str = "_step",
+        stream: str = "default",
+        include_summary: bool = False,
+        max_workers: int = 1,
+        use_graphql: bool = True,
+        graphql_filters: dict[str, Any] | None = None,
+        graphql_per_page: int = 500,
+    ) -> pd.DataFrame:
+        if max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+        if samples < 1:
+            raise ValueError("samples must be >= 1")
+
+        history_keys = _history_keys(keys=keys, x_axis=x_axis)
+        store = self._history_store(keys=history_keys, samples=samples, x_axis=x_axis, stream=stream)
+        if refresh_cache or not store.exists():
+            metadata_records = self._fetch_metadata_records(
+                filters=filters,
+                include_summary=include_summary,
+                use_graphql=use_graphql,
+                graphql_filters=graphql_filters,
+                graphql_per_page=graphql_per_page,
+            )
+            self._save_metadata(filters=filters, include_summary=include_summary, records=metadata_records)
+            records = _download_histories_from_metadata(
+                project=self.project,
+                metadata_records=metadata_records,
+                keys=history_keys,
+                samples=samples,
+                x_axis=x_axis,
+                stream=stream,
+                max_workers=max_workers,
+            )
+            store.save(
+                project=self.project,
+                source_filters=filters,
+                keys=history_keys,
+                samples=samples,
+                x_axis=x_axis,
+                stream=stream,
+                include_summary=include_summary,
+                records=records,
+            )
+        else:
+            payload = store.load()
+            cached_include_summary = payload.get("include_summary", False)
+            if cached_include_summary != include_summary:
+                raise ValueError(
+                    "Cached history data was saved with "
+                    f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
+                    "Refresh the cache to change this."
+                )
+            records = payload["records"]
+
+        records = [record for record in records if matches_filter(record, filters)]
+        if not records:
+            return pd.DataFrame()
+        return _history_records_to_dataframe(records)
 
     def _table_store(self, table_key: str, artifact_name_contains: str) -> ParquetTableCacheStore:
         return ParquetTableCacheStore(
@@ -250,6 +319,23 @@ class WandbRunCache:
                 run_cache_path=self.cache_path,
                 table_key=table_key,
                 artifact_name_contains=artifact_name_contains,
+            )
+        )
+
+    def _history_store(
+        self,
+        keys: Sequence[str] | None,
+        samples: int,
+        x_axis: str,
+        stream: str,
+    ) -> ParquetHistoryCacheStore:
+        return ParquetHistoryCacheStore(
+            history_cache_path(
+                run_cache_path=self.cache_path,
+                keys=keys,
+                samples=samples,
+                x_axis=x_axis,
+                stream=stream,
             )
         )
 
@@ -398,4 +484,87 @@ def serialize_table_rows(metadata: dict[str, Any], table: Any) -> list[dict[str,
         row = {column: to_jsonable(value) for column, value in zip(table.columns, row_values)}
         row.update(metadata)
         records.append(row)
+    return records
+
+
+def _history_keys(keys: Sequence[str] | None, x_axis: str) -> list[str] | None:
+    if keys is None:
+        return None
+
+    history_keys = list(dict.fromkeys(keys))
+    if x_axis not in history_keys:
+        history_keys.insert(0, x_axis)
+    return history_keys
+
+
+def _history_records_to_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
+    df = pd.DataFrame.from_records(records)
+    if "config" in df.columns:
+        config_df = pd.DataFrame(df["config"].tolist()).add_prefix("config.")
+        df = pd.concat([df.drop(columns=["config"]), config_df], axis=1)
+    return df
+
+
+def _download_histories_from_metadata(
+    project: str,
+    metadata_records: list[dict[str, Any]],
+    keys: Sequence[str] | None,
+    samples: int,
+    x_axis: str,
+    stream: str,
+    max_workers: int,
+) -> list[dict[str, Any]]:
+    tasks = [
+        {
+            "project": project,
+            "run_id": metadata["run_id"],
+            "metadata": metadata,
+            "keys": list(keys) if keys is not None else None,
+            "samples": samples,
+            "x_axis": x_axis,
+            "stream": stream,
+        }
+        for metadata in metadata_records
+    ]
+
+    history_records: list[dict[str, Any]] = []
+    if max_workers == 1:
+        for task in tasks:
+            history_records.extend(_download_run_history_from_wandb(task))
+    else:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            for run_records in executor.map(_download_run_history_from_wandb, tasks):
+                history_records.extend(run_records)
+    return history_records
+
+
+def _download_run_history_from_wandb(task: dict[str, Any]) -> list[dict[str, Any]]:
+    import wandb
+
+    api = wandb.Api()
+    run = api.run(f"{task['project']}/{task['run_id']}")
+    history = run.history(
+        keys=task["keys"],
+        samples=task["samples"],
+        x_axis=task["x_axis"],
+        pandas=True,
+        stream=task["stream"],
+    )
+    return _serialize_history_rows(metadata=task["metadata"], history=history)
+
+
+def _serialize_history_rows(metadata: dict[str, Any], history: pd.DataFrame) -> list[dict[str, Any]]:
+    if history.empty:
+        return []
+
+    conflicts = sorted(set(history.columns) & set(metadata))
+    if conflicts:
+        raise ValueError(f"History columns conflict with run metadata columns: {conflicts}")
+
+    history = history.where(pd.notna(history), None)
+    records = []
+    for row in history.to_dict(orient="records"):
+        record = {column: to_jsonable(value) for column, value in row.items()}
+        record.update(metadata)
+        records.append(record)
     return records

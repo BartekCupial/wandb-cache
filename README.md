@@ -66,15 +66,42 @@ df = cache.table_dataframe(
 )
 ```
 
+## History
+
+```python
+from wandb_cache import WandbRunCache
+
+cache = WandbRunCache(
+    project="jiayipan/TinyZero",
+    cache="tinyzero_core",
+)
+
+df = cache.history_dataframe(
+    filters=None,
+    refresh_cache=True,
+    keys=[
+        "_step",
+        "critic/score/mean",
+        "response_length/mean",
+        "timing_s/step",
+    ],
+    samples=10_000,
+    x_axis="_step",
+    max_workers=16,
+    use_graphql=True,
+)
+```
+
 ## Examples
 
 ```bash
 python examples/cache_metadata.py
 python examples/cache_table_summary.py
 python examples/benchmark_speed.py
+python examples/plot_history.py
 ```
 
-These examples use the `ideas-ncbr/plan-crl` project and the `2026_05_13_self_refinement_generic_retry_13x4` tag, so they expect normal W&B auth through `WANDB_API_KEY` or `~/.netrc`.
+The metadata, table, and benchmark examples use the `ideas-ncbr/plan-crl` project and the `2026_05_13_self_refinement_generic_retry_13x4` tag. The history plot uses the public `jiayipan/TinyZero` project. They expect normal W&B auth through `WANDB_API_KEY` or `~/.netrc`.
 
 ## Benchmarking results
 
@@ -105,7 +132,7 @@ Table refresh timings include metadata selection, W&B table artifact downloads, 
 
 ## Roadmap
 
-- [ ] **History Tracking:** Add full support for downloading, flattening and caching sampled history metrics for a run.
+- [x] **History Tracking:** Add support for downloading, flattening, and caching sampled history metrics.
 - [x] **Inline Metadata:** Inject run configs directly into Parquet rows for faster reads.
 - [x] **Parquet Storage:** Migrate from JSON to Parquets, to speedup loading of the data.
 - [x] **Benchmarking:** Add examples and benchmark the library.

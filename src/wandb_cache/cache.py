@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -30,6 +31,27 @@ def table_cache_path(run_cache_path: str | Path, table_key: str, artifact_name_c
     safe_table_key = _safe_cache_token(table_key)
     safe_artifact = _safe_cache_token(artifact_name_contains)
     return run_cache_path.with_name(f"{base_name}.{safe_table_key}.{safe_artifact}.table.parquet")
+
+
+def history_cache_path(
+    run_cache_path: str | Path,
+    keys: Sequence[str] | None,
+    samples: int,
+    x_axis: str,
+    stream: str,
+) -> Path:
+    run_cache_path = Path(run_cache_path)
+    base_name = run_cache_path.name
+    base_name = base_name.removesuffix(".runs.parquet")
+    spec = {
+        "keys": list(keys or []),
+        "samples": samples,
+        "stream": stream,
+        "x_axis": x_axis,
+    }
+    digest = hashlib.sha1(json.dumps(spec, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    safe_x_axis = _safe_cache_token(x_axis)
+    return run_cache_path.with_name(f"{base_name}.{safe_x_axis}.{digest}.history.parquet")
 
 
 def _safe_cache_token(value: str) -> str:
@@ -127,6 +149,47 @@ class ParquetTableCacheStore:
             "source_filters": to_jsonable(source_filters or {}),
             "table_key": table_key,
             "artifact_name_contains": artifact_name_contains,
+            "include_summary": include_summary,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "row_count": len(records),
+        }
+        _write_parquet(self.path, records, payload)
+
+    def exists(self) -> bool:
+        return self.path.exists()
+
+
+class ParquetHistoryCacheStore:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+
+    def load(self) -> dict[str, Any]:
+        table = pq.read_table(self.path)
+        payload = _decode_metadata(table.schema.metadata)
+        payload["records"] = table.to_pylist()
+        return payload
+
+    def save(
+        self,
+        *,
+        project: str,
+        source_filters: dict[str, Any] | None,
+        keys: Sequence[str] | None,
+        samples: int,
+        x_axis: str,
+        stream: str,
+        include_summary: bool,
+        records: list[dict[str, Any]],
+    ) -> None:
+        payload = {
+            "kind": "wandb_history",
+            "metadata_mode": "inline",
+            "project": project,
+            "source_filters": to_jsonable(source_filters or {}),
+            "keys": to_jsonable(list(keys or [])),
+            "samples": samples,
+            "x_axis": x_axis,
+            "stream": stream,
             "include_summary": include_summary,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "row_count": len(records),

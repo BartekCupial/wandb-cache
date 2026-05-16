@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import pandas as pd
 
@@ -51,6 +51,38 @@ def fetch_table(
         artifact_name_contains=artifact_name_contains,
         include_summary=include_summary,
         missing=missing,
+        max_workers=max_workers,
+        use_graphql=use_graphql,
+        graphql_filters=graphql_filters,
+        graphql_per_page=graphql_per_page,
+    )
+
+
+def fetch_history(
+    project: str,
+    filters: dict[str, Any] | None = None,
+    keys: Sequence[str] | None = None,
+    samples: int = 500,
+    x_axis: str = "_step",
+    stream: str = "default",
+    cache: str | Path | None = None,
+    cache_dir: str | Path = ".wandb_cache",
+    refresh: bool = False,
+    include_summary: bool = False,
+    max_workers: int = 1,
+    use_graphql: bool = True,
+    graphql_filters: dict[str, Any] | None = None,
+    graphql_per_page: int = 500,
+) -> pd.DataFrame:
+    run_cache = WandbRunCache(project=project, cache=cache, cache_dir=cache_dir)
+    return run_cache.history_dataframe(
+        filters=filters,
+        refresh_cache=refresh,
+        keys=keys,
+        samples=samples,
+        x_axis=x_axis,
+        stream=stream,
+        include_summary=include_summary,
         max_workers=max_workers,
         use_graphql=use_graphql,
         graphql_filters=graphql_filters,

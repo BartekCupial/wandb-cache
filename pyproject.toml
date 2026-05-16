@@ -24,6 +24,7 @@ Homepage = "https://github.com/BartekCupial/wandb-cache"
 [project.optional-dependencies]
 dev = [
     "build",
+    "matplotlib",
     "ruff",
     "twine",
 ]
