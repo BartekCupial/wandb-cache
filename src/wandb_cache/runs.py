@@ -243,7 +243,8 @@ class WandbRunCache:
             return df
 
         if "config" in df.columns:
-            config_df = pd.DataFrame(df["config"].tolist()).add_prefix("config.")
+            # Use json_normalize to recursively flatten all nested dicts
+            config_df = pd.json_normalize(df["config"].tolist(), sep=".").add_prefix("config.")
             df = pd.concat([df.drop(columns=["config"]), config_df], axis=1)
 
         return df
@@ -500,7 +501,7 @@ def _history_keys(keys: Sequence[str] | None, x_axis: str) -> list[str] | None:
 def _history_records_to_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame.from_records(records)
     if "config" in df.columns:
-        config_df = pd.DataFrame(df["config"].tolist()).add_prefix("config.")
+        config_df = pd.json_normalize(df["config"].tolist(), sep=".").add_prefix("config.")
         df = pd.concat([df.drop(columns=["config"]), config_df], axis=1)
     return df
 
