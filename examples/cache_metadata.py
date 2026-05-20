@@ -11,7 +11,7 @@ def main() -> None:
 
     df = cache.dataframe(
         filters=FILTERS,
-        refresh_cache=False,
+        refresh_cache=True,
         use_graphql=True,
     )
 

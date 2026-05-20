@@ -4,7 +4,6 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Sequence
 
-import pyarrow.parquet as pq
 import pandas as pd
 
 from wandb_cache.cache import (
@@ -114,6 +113,7 @@ class WandbRunCache:
         use_graphql: bool = True,
         graphql_filters: dict[str, Any] | None = None,
         graphql_per_page: int = 500,
+        config_keys: Sequence[str] | None = None,
     ) -> pd.DataFrame:
         records = self.records(
             filters=filters,
@@ -125,6 +125,7 @@ class WandbRunCache:
         )
         if not records:
             return pd.DataFrame()
+        records = _select_record_configs(records, config_keys)
         return pd.json_normalize(records, sep=".")
 
     def refresh_table(
@@ -138,10 +139,12 @@ class WandbRunCache:
         use_graphql: bool = True,
         graphql_filters: dict[str, Any] | None = None,
         graphql_per_page: int = 500,
+        config_keys: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         if max_workers < 1:
             raise ValueError("max_workers must be >= 1")
 
+        config_keys = _normalize_config_keys(config_keys)
         metadata_records = self._fetch_metadata_records(
             filters=filters,
             include_summary=include_summary,
@@ -149,11 +152,12 @@ class WandbRunCache:
             graphql_filters=graphql_filters,
             graphql_per_page=graphql_per_page,
         )
+        table_metadata_records = _select_record_configs(metadata_records, config_keys)
         self._save_metadata(filters=filters, include_summary=include_summary, records=metadata_records)
 
         table_records = download_tables_from_metadata(
             project=self.project,
-            metadata_records=metadata_records,
+            metadata_records=table_metadata_records,
             table_key=table_key,
             artifact_name_contains=artifact_name_contains,
             missing=missing,
@@ -183,32 +187,34 @@ class WandbRunCache:
         use_graphql: bool = True,
         graphql_filters: dict[str, Any] | None = None,
         graphql_per_page: int = 500,
+        config_keys: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
+        config_keys = _normalize_config_keys(config_keys)
         store = self._table_store(table_key=table_key, artifact_name_contains=artifact_name_contains)
         if refresh_cache or not store.exists():
-            records = self.refresh_table(
+            return self.refresh_table(
                 filters=filters,
                 table_key=table_key,
                 artifact_name_contains=artifact_name_contains,
                 include_summary=include_summary,
+                config_keys=config_keys,
                 missing=missing,
                 max_workers=max_workers,
                 use_graphql=use_graphql,
                 graphql_filters=graphql_filters,
                 graphql_per_page=graphql_per_page,
             )
-        else:
-            payload = store.load()
-            cached_include_summary = payload.get("include_summary", False)
-            if cached_include_summary != include_summary:
-                raise ValueError(
-                    "Cached table data was saved with "
-                    f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
-                    "Refresh the cache to change this."
-                )
-            records = payload["records"]
 
-        return [record for record in records if matches_filter(record, filters)]
+        payload = store.load()
+        cached_include_summary = payload.get("include_summary", False)
+        if cached_include_summary != include_summary:
+            raise ValueError(
+                "Cached table data was saved with "
+                f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
+                "Refresh the cache to change this."
+            )
+        records = [record for record in payload["records"] if matches_filter(record, filters)]
+        return _select_record_configs(records, config_keys)
 
     def table_dataframe(
         self,
@@ -222,7 +228,9 @@ class WandbRunCache:
         use_graphql: bool = True,
         graphql_filters: dict[str, Any] | None = None,
         graphql_per_page: int = 500,
+        config_keys: Sequence[str] | None = None,
     ) -> pd.DataFrame:
+        config_keys = _normalize_config_keys(config_keys)
         store = self._table_store(table_key=table_key, artifact_name_contains=artifact_name_contains)
         if refresh_cache or not store.exists():
             self.refresh_table(
@@ -230,6 +238,7 @@ class WandbRunCache:
                 table_key=table_key,
                 artifact_name_contains=artifact_name_contains,
                 include_summary=include_summary,
+                config_keys=config_keys,
                 missing=missing,
                 max_workers=max_workers,
                 use_graphql=use_graphql,
@@ -237,17 +246,19 @@ class WandbRunCache:
                 graphql_per_page=graphql_per_page,
             )
 
-        table = pq.read_table(store.path)
-        df = table.to_pandas()
+        payload = store.load()
+        cached_include_summary = payload.get("include_summary", False)
+        if cached_include_summary != include_summary:
+            raise ValueError(
+                "Cached table data was saved with "
+                f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
+                "Refresh the cache to change this."
+            )
+        df = pd.DataFrame.from_records(payload["records"])
         if df.empty:
             return df
 
-        if "config" in df.columns:
-            # Use json_normalize to recursively flatten all nested dicts
-            config_df = pd.json_normalize(df["config"].tolist(), sep=".").add_prefix("config.")
-            df = pd.concat([df.drop(columns=["config"]), config_df], axis=1)
-
-        return df
+        return _flatten_config_column(df, config_keys)
 
     def history_dataframe(
         self,
@@ -262,12 +273,14 @@ class WandbRunCache:
         use_graphql: bool = True,
         graphql_filters: dict[str, Any] | None = None,
         graphql_per_page: int = 500,
+        config_keys: Sequence[str] | None = None,
     ) -> pd.DataFrame:
         if max_workers < 1:
             raise ValueError("max_workers must be >= 1")
         if samples < 1:
             raise ValueError("samples must be >= 1")
 
+        config_keys = _normalize_config_keys(config_keys)
         history_keys = _history_keys(keys=keys, x_axis=x_axis)
         store = self._history_store(keys=history_keys, samples=samples, x_axis=x_axis, stream=stream)
         if refresh_cache or not store.exists():
@@ -278,10 +291,11 @@ class WandbRunCache:
                 graphql_filters=graphql_filters,
                 graphql_per_page=graphql_per_page,
             )
+            history_metadata_records = _select_record_configs(metadata_records, config_keys)
             self._save_metadata(filters=filters, include_summary=include_summary, records=metadata_records)
             records = _download_histories_from_metadata(
                 project=self.project,
-                metadata_records=metadata_records,
+                metadata_records=history_metadata_records,
                 keys=history_keys,
                 samples=samples,
                 x_axis=x_axis,
@@ -307,12 +321,11 @@ class WandbRunCache:
                     f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
                     "Refresh the cache to change this."
                 )
-            records = payload["records"]
+            records = [record for record in payload["records"] if matches_filter(record, filters)]
 
-        records = [record for record in records if matches_filter(record, filters)]
         if not records:
             return pd.DataFrame()
-        return _history_records_to_dataframe(records)
+        return _history_records_to_dataframe(records, config_keys)
 
     def _table_store(self, table_key: str, artifact_name_contains: str) -> ParquetTableCacheStore:
         return ParquetTableCacheStore(
@@ -382,6 +395,94 @@ class WandbRunCache:
 
         self._api_client = wandb.Api()
         return self._api_client
+
+
+def _normalize_config_keys(config_keys: Sequence[str] | None) -> list[str]:
+    if config_keys is None:
+        return []
+
+    if isinstance(config_keys, str):
+        raw_keys = [config_keys]
+    else:
+        raw_keys = list(config_keys)
+
+    keys: list[str] = []
+    for key in raw_keys:
+        if not isinstance(key, str):
+            raise TypeError("config_keys must contain strings")
+        key = key.removeprefix("config.")
+        if not key:
+            raise ValueError("config_keys cannot contain empty strings")
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _select_record_configs(
+    records: list[dict[str, Any]],
+    config_keys: Sequence[str] | None,
+) -> list[dict[str, Any]]:
+    config_keys = _normalize_config_keys(config_keys)
+
+    selected_records = []
+    for record in records:
+        selected_record = dict(record)
+        selected_config = _select_config_keys(record.get("config"), config_keys)
+        if selected_config:
+            selected_record["config"] = selected_config
+        else:
+            selected_record.pop("config", None)
+        selected_records.append(selected_record)
+    return selected_records
+
+
+def _select_config_keys(config: Any, config_keys: Sequence[str]) -> dict[str, Any]:
+    config = dict(config or {}) if isinstance(config, dict) else {}
+    selected: dict[str, Any] = {}
+    for key in config_keys:
+        if key in config:
+            selected[key] = config[key]
+            continue
+
+        parts = key.split(".")
+        found, value = _read_nested_config(config, parts)
+        if found:
+            _write_nested_config(selected, parts, value)
+    return selected
+
+
+def _read_nested_config(config: dict[str, Any], parts: Sequence[str]) -> tuple[bool, Any]:
+    value: Any = config
+    for part in parts:
+        if not isinstance(value, dict) or part not in value:
+            return False, None
+        value = value[part]
+    return True, value
+
+
+def _write_nested_config(config: dict[str, Any], parts: Sequence[str], value: Any) -> None:
+    target = config
+    for part in parts[:-1]:
+        nested = target.get(part)
+        if not isinstance(nested, dict):
+            nested = {}
+            target[part] = nested
+        target = nested
+    target[parts[-1]] = value
+
+
+def _flatten_config_column(df: pd.DataFrame, config_keys: Sequence[str] | None = None) -> pd.DataFrame:
+    if "config" not in df.columns:
+        return df
+
+    config_keys = _normalize_config_keys(config_keys)
+    if not config_keys:
+        return df.drop(columns=["config"])
+
+    configs = [_select_config_keys(config, config_keys) for config in df["config"].tolist()]
+    config_df = pd.json_normalize(configs, sep=".").add_prefix("config.")
+    config_df.index = df.index
+    return pd.concat([df.drop(columns=["config"]), config_df], axis=1)
 
 
 def serialize_run_metadata(run: Any, include_summary: bool = False) -> dict[str, Any]:
@@ -476,7 +577,7 @@ def download_run_table_from_wandb(task: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def serialize_table_rows(metadata: dict[str, Any], table: Any) -> list[dict[str, Any]]:
-    conflicts = sorted(set(table.columns) & set(metadata))
+    conflicts = sorted(set(table.columns) & _metadata_column_names(metadata))
     if conflicts:
         raise ValueError(f"Table columns conflict with run metadata columns: {conflicts}")
 
@@ -498,12 +599,18 @@ def _history_keys(keys: Sequence[str] | None, x_axis: str) -> list[str] | None:
     return history_keys
 
 
-def _history_records_to_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
+def _history_records_to_dataframe(
+    records: list[dict[str, Any]],
+    config_keys: Sequence[str] | None = None,
+) -> pd.DataFrame:
     df = pd.DataFrame.from_records(records)
-    if "config" in df.columns:
-        config_df = pd.json_normalize(df["config"].tolist(), sep=".").add_prefix("config.")
-        df = pd.concat([df.drop(columns=["config"]), config_df], axis=1)
-    return df
+    return _flatten_config_column(df, config_keys)
+
+
+def _metadata_column_names(metadata: dict[str, Any]) -> set[str]:
+    columns = set(metadata)
+    columns.add("config")
+    return columns
 
 
 def _download_histories_from_metadata(
@@ -558,7 +665,7 @@ def _serialize_history_rows(metadata: dict[str, Any], history: pd.DataFrame) -> 
     if history.empty:
         return []
 
-    conflicts = sorted(set(history.columns) & set(metadata))
+    conflicts = sorted(set(history.columns) & _metadata_column_names(metadata))
     if conflicts:
         raise ValueError(f"History columns conflict with run metadata columns: {conflicts}")
 

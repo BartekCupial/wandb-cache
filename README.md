@@ -41,9 +41,28 @@ cache = WandbRunCache(
 df = cache.dataframe(
     filters={"tags": "2026_05_13_self_refinement_generic_retry_13x4"},
     refresh_cache=True,
+    config_keys=["env_name", "seed"],
     use_graphql=True,
 )
 ```
+
+The run metadata cache keeps the full W&B config. By default, config fields are not copied into returned
+DataFrames or repeated table/history rows. This keeps large table and history Parquet files much smaller
+because run config would otherwise be copied into every row. Pass `config_keys` to include only the config
+fields you need:
+
+```python
+df = cache.table_dataframe(
+    filters={"tags": "2026_05_13_self_refinement_generic_retry_13x4"},
+    refresh_cache=True,
+    config_keys=["env_name", "optimizer.lr"],
+)
+```
+
+Leaving `config_keys` unset omits config columns from DataFrames and table/history row caches. Dotted keys
+select nested config values, and a `config.` prefix is also accepted. When changing `config_keys` for an
+existing table or history cache, use `refresh_cache=True` (or `refresh=True` with the function API) to
+rewrite the Parquet file with the new config selection.
 
 ## Tables
 
@@ -62,6 +81,7 @@ df = cache.table_dataframe(
     artifact_name_contains="episode_log",
     missing="skip",
     max_workers=16,
+    config_keys=["env_name"],
     use_graphql=True,
 )
 ```

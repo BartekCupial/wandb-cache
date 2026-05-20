@@ -16,12 +16,14 @@ def fetch_runs(
     use_graphql: bool = True,
     graphql_filters: dict[str, Any] | None = None,
     graphql_per_page: int = 500,
+    config_keys: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     run_cache = WandbRunCache(project=project, cache=cache, cache_dir=cache_dir)
     return run_cache.dataframe(
         filters=filters,
         refresh_cache=refresh,
         include_summary=include_summary,
+        config_keys=config_keys,
         use_graphql=use_graphql,
         graphql_filters=graphql_filters,
         graphql_per_page=graphql_per_page,
@@ -42,6 +44,7 @@ def fetch_table(
     use_graphql: bool = True,
     graphql_filters: dict[str, Any] | None = None,
     graphql_per_page: int = 500,
+    config_keys: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     run_cache = WandbRunCache(project=project, cache=cache, cache_dir=cache_dir)
     return run_cache.table_dataframe(
@@ -50,6 +53,7 @@ def fetch_table(
         table_key=table_key,
         artifact_name_contains=artifact_name_contains,
         include_summary=include_summary,
+        config_keys=config_keys,
         missing=missing,
         max_workers=max_workers,
         use_graphql=use_graphql,
@@ -73,6 +77,7 @@ def fetch_history(
     use_graphql: bool = True,
     graphql_filters: dict[str, Any] | None = None,
     graphql_per_page: int = 500,
+    config_keys: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     run_cache = WandbRunCache(project=project, cache=cache, cache_dir=cache_dir)
     return run_cache.history_dataframe(
@@ -83,6 +88,7 @@ def fetch_history(
         x_axis=x_axis,
         stream=stream,
         include_summary=include_summary,
+        config_keys=config_keys,
         max_workers=max_workers,
         use_graphql=use_graphql,
         graphql_filters=graphql_filters,

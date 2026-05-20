@@ -24,7 +24,7 @@ def main() -> None:
     cache = WandbRunCache(project=PROJECT, cache=f"examples/{CACHE_NAME}")
     df = cache.history_dataframe(
         filters=FILTERS,
-        refresh_cache=False,
+        refresh_cache=True,
         keys=[STEP_KEY, *METRICS],
         samples=SAMPLES,
         x_axis=STEP_KEY,

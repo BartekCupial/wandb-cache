@@ -15,11 +15,12 @@ def main() -> None:
 
     df = cache.table_dataframe(
         filters=FILTERS,
-        refresh_cache=False,
+        refresh_cache=True,
         table_key=TABLE_KEY,
         artifact_name_contains=ARTIFACT_NAME_CONTAINS,
         missing="raise",
         max_workers=16,
+        config_keys=["env_name", "llm_actor.engine_args.model_id"],
         use_graphql=True,
     )
 
