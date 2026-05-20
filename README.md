@@ -28,6 +28,12 @@ For packaging tools:
 pip install -e ".[dev]"
 ```
 
+Install pre-commit hooks for formatting and linting:
+
+```bash
+pre-commit install
+```
+
 ## Metadata
 
 ```python

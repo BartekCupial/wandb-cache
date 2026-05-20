@@ -23,8 +23,12 @@ Homepage = "https://github.com/BartekCupial/wandb-cache"
 
 [project.optional-dependencies]
 dev = [
+    "black",
     "build",
+    "flake8",
+    "isort",
     "matplotlib",
+    "pre-commit",
     "ruff",
     "twine",
 ]
@@ -35,3 +39,11 @@ where = ["src"]
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+
+[tool.black]
+line-length = 120
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 120

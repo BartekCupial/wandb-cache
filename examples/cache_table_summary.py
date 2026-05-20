@@ -2,7 +2,6 @@ import pandas as pd
 
 from wandb_cache import WandbRunCache
 
-
 PROJECT = "ideas-ncbr/plan-crl"
 EXP_NAME = "2026_05_13_self_refinement_generic_retry_13x4"
 FILTERS = {"tags": EXP_NAME}

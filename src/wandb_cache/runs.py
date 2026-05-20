@@ -512,9 +512,7 @@ def get_run_table(
     artifacts = [
         artifact
         for artifact in run.logged_artifacts()
-        if artifact.type == "run_table"
-        and artifact_name_contains in artifact.name
-        and "describe" not in artifact.name
+        if artifact.type == "run_table" and artifact_name_contains in artifact.name and "describe" not in artifact.name
     ]
     if not artifacts:
         if missing == "skip":

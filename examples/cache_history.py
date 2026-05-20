@@ -5,7 +5,6 @@ import pandas as pd
 
 from wandb_cache import WandbRunCache
 
-
 PROJECT = "jiayipan/TinyZero"
 CACHE_NAME = "tinyzero_core"
 FILTERS = None

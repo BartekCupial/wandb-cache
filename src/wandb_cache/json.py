@@ -4,7 +4,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
 

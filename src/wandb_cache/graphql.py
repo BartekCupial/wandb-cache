@@ -11,7 +11,6 @@ from urllib.request import Request, urlopen
 
 from wandb_cache.json import to_jsonable
 
-
 RUNS_METADATA_QUERY = """
 query RunsMetadata($entity: String!, $project: String!, $filters: JSONString, $first: Int!, $cursor: String) {
   project(name: $project, entityName: $entity) {

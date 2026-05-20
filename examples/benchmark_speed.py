@@ -26,20 +26,20 @@ def main() -> None:
     print("--- Metadata Benchmark ---")
     for graphql in (True, False):
         cache = WandbRunCache(project=PROJECT, cache=f"benchmark/metadata_gql_{graphql}")
-        
+
         timed(
             f"Metadata (graphql={graphql}, refresh=True)",
-            lambda: cache.dataframe(filters=FILTERS, use_graphql=graphql, refresh_cache=True)
+            lambda: cache.dataframe(filters=FILTERS, use_graphql=graphql, refresh_cache=True),
         )
         timed(
             f"Metadata (graphql={graphql}, refresh=False)",
-            lambda: cache.dataframe(filters=FILTERS, use_graphql=graphql, refresh_cache=False)
+            lambda: cache.dataframe(filters=FILTERS, use_graphql=graphql, refresh_cache=False),
         )
 
     print("\n--- Table Benchmark ---")
     for graphql in (True, False):
         cache = WandbRunCache(project=PROJECT, cache=f"benchmark/table_gql_{graphql}")
-        
+
         timed(
             f"Table (graphql={graphql}, refresh=True)",
             lambda: cache.table_dataframe(
@@ -50,7 +50,7 @@ def main() -> None:
                 max_workers=MAX_WORKERS,
                 use_graphql=graphql,
                 refresh_cache=True,
-            )
+            ),
         )
         timed(
             f"Table (graphql={graphql}, refresh=False)",
@@ -62,7 +62,7 @@ def main() -> None:
                 max_workers=MAX_WORKERS,
                 use_graphql=graphql,
                 refresh_cache=False,
-            )
+            ),
         )
 
 
