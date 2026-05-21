@@ -27,7 +27,10 @@ def matches_filter(record: dict[str, Any], filters: dict[str, Any] | None) -> bo
                 return False
             continue
 
-        value = read_field(record, key)
+        try:
+            value = read_field(record, key)
+        except KeyError:
+            return False
         if not matches_condition(value, condition):
             return False
     return True

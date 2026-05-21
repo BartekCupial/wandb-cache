@@ -72,7 +72,12 @@ def test_records_keep_full_config_in_metadata_cache(tmp_path: Path) -> None:
     cache = cache_with_metadata(tmp_path)
 
     cache.dataframe(refresh_cache=True, config_keys=["env_id"])
-    payload = cache.store.load()
+    payload = cache._metadata_store(
+        filters=None,
+        include_summary=False,
+        use_graphql=True,
+        graphql_filters=None,
+    ).load()
 
     assert payload["records"][0]["config"]["seed"] == 1
     assert payload["records"][0]["config"]["llm_actor"]["engine_args"]["model_id"] == "test-model"
@@ -82,11 +87,21 @@ def test_table_dataframe_filters_config_columns_from_cached_rows(tmp_path: Path)
     cache = WandbRunCache(project="entity/project", cache="table-test", cache_dir=tmp_path)
     table_key = "metrics/table"
     artifact_name_contains = "table"
-    cache._table_store(table_key, artifact_name_contains).save(
+    config_keys = ["env_id"]
+    cache._table_store(
+        filters=None,
+        table_key=table_key,
+        artifact_name_contains=artifact_name_contains,
+        include_summary=False,
+        use_graphql=True,
+        graphql_filters=None,
+        config_keys=config_keys,
+    ).save(
         project=cache.project,
         source_filters=None,
         table_key=table_key,
         artifact_name_contains=artifact_name_contains,
+        config_keys=config_keys,
         include_summary=False,
         records=[
             {
@@ -105,7 +120,7 @@ def test_table_dataframe_filters_config_columns_from_cached_rows(tmp_path: Path)
     df = cache.table_dataframe(
         table_key=table_key,
         artifact_name_contains=artifact_name_contains,
-        config_keys=["env_id"],
+        config_keys=config_keys,
     )
 
     assert df["score"].tolist() == [100]

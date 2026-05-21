@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -12,11 +11,18 @@ from wandb_cache.cache import (
     ParquetTableCacheStore,
     default_cache_path,
     history_cache_path,
+    run_metadata_cache_path,
     table_cache_path,
+)
+from wandb_cache.configs import flatten_config_column, normalize_config_keys, select_record_configs
+from wandb_cache.downloads import (
+    download_histories_from_metadata,
+    download_tables_from_metadata,
+    history_keys,
+    serialize_run_metadata,
 )
 from wandb_cache.filters import matches_filter
 from wandb_cache.graphql import fetch_run_metadata_graphql
-from wandb_cache.json import to_jsonable
 
 
 class WandbRunCache:
@@ -28,82 +34,7 @@ class WandbRunCache:
     ):
         self.project = project
         self.cache_path = default_cache_path(cache_dir=cache_dir, cache=cache, project=project)
-        self.store = ParquetRunCacheStore(self.cache_path)
         self._api_client = None
-
-    def _fetch_runs(self, filters: dict[str, Any] | None = None) -> list[Any]:
-        api = self._api()
-        return list(api.runs(self.project, filters=filters or {}))
-
-    def refresh(
-        self,
-        filters: dict[str, Any] | None = None,
-        include_summary: bool = False,
-        use_graphql: bool = True,
-        graphql_filters: dict[str, Any] | None = None,
-        graphql_per_page: int = 500,
-    ) -> list[dict[str, Any]]:
-        records = self._fetch_metadata_records(
-            filters=filters,
-            include_summary=include_summary,
-            use_graphql=use_graphql,
-            graphql_filters=graphql_filters,
-            graphql_per_page=graphql_per_page,
-        )
-        self._save_metadata(filters=filters, include_summary=include_summary, records=records)
-        return records
-
-    def _save_metadata(
-        self,
-        filters: dict[str, Any] | None,
-        include_summary: bool,
-        records: list[dict[str, Any]],
-    ) -> None:
-        self.store.save(
-            project=self.project,
-            source_filters=filters,
-            include_summary=include_summary,
-            records=records,
-        )
-
-    def records(
-        self,
-        filters: dict[str, Any] | None = None,
-        refresh_cache: bool = False,
-        include_summary: bool = False,
-        use_graphql: bool = True,
-        graphql_filters: dict[str, Any] | None = None,
-        graphql_per_page: int = 500,
-    ) -> list[dict[str, Any]]:
-        if refresh_cache:
-            records = self.refresh(
-                filters=filters,
-                include_summary=include_summary,
-                use_graphql=use_graphql,
-                graphql_filters=graphql_filters,
-                graphql_per_page=graphql_per_page,
-            )
-        else:
-            if not self.store.exists():
-                records = self.refresh(
-                    filters=filters,
-                    include_summary=include_summary,
-                    use_graphql=use_graphql,
-                    graphql_filters=graphql_filters,
-                    graphql_per_page=graphql_per_page,
-                )
-            else:
-                payload = self.store.load()
-                cached_include_summary = payload.get("include_summary", False)
-                if cached_include_summary != include_summary:
-                    raise ValueError(
-                        "Cached run metadata was saved with "
-                        f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
-                        "Refresh the cache to change this."
-                    )
-                records = payload["records"]
-
-        return [record for record in records if matches_filter(record, filters)]
 
     def dataframe(
         self,
@@ -115,7 +46,7 @@ class WandbRunCache:
         graphql_per_page: int = 500,
         config_keys: Sequence[str] | None = None,
     ) -> pd.DataFrame:
-        records = self.records(
+        records = self._metadata_records(
             filters=filters,
             refresh_cache=refresh_cache,
             include_summary=include_summary,
@@ -125,96 +56,7 @@ class WandbRunCache:
         )
         if not records:
             return pd.DataFrame()
-        records = _select_record_configs(records, config_keys)
-        return pd.json_normalize(records, sep=".")
-
-    def refresh_table(
-        self,
-        filters: dict[str, Any] | None = None,
-        table_key: str = "collect/episode_log",
-        artifact_name_contains: str = "episode_log",
-        include_summary: bool = False,
-        missing: str = "raise",
-        max_workers: int = 1,
-        use_graphql: bool = True,
-        graphql_filters: dict[str, Any] | None = None,
-        graphql_per_page: int = 500,
-        config_keys: Sequence[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        if max_workers < 1:
-            raise ValueError("max_workers must be >= 1")
-
-        config_keys = _normalize_config_keys(config_keys)
-        metadata_records = self._fetch_metadata_records(
-            filters=filters,
-            include_summary=include_summary,
-            use_graphql=use_graphql,
-            graphql_filters=graphql_filters,
-            graphql_per_page=graphql_per_page,
-        )
-        table_metadata_records = _select_record_configs(metadata_records, config_keys)
-        self._save_metadata(filters=filters, include_summary=include_summary, records=metadata_records)
-
-        table_records = download_tables_from_metadata(
-            project=self.project,
-            metadata_records=table_metadata_records,
-            table_key=table_key,
-            artifact_name_contains=artifact_name_contains,
-            missing=missing,
-            max_workers=max_workers,
-        )
-
-        store = self._table_store(table_key=table_key, artifact_name_contains=artifact_name_contains)
-        store.save(
-            project=self.project,
-            source_filters=filters,
-            table_key=table_key,
-            artifact_name_contains=artifact_name_contains,
-            include_summary=include_summary,
-            records=table_records,
-        )
-        return table_records
-
-    def table_records(
-        self,
-        filters: dict[str, Any] | None = None,
-        refresh_cache: bool = False,
-        table_key: str = "collect/episode_log",
-        artifact_name_contains: str = "episode_log",
-        include_summary: bool = False,
-        missing: str = "raise",
-        max_workers: int = 1,
-        use_graphql: bool = True,
-        graphql_filters: dict[str, Any] | None = None,
-        graphql_per_page: int = 500,
-        config_keys: Sequence[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        config_keys = _normalize_config_keys(config_keys)
-        store = self._table_store(table_key=table_key, artifact_name_contains=artifact_name_contains)
-        if refresh_cache or not store.exists():
-            return self.refresh_table(
-                filters=filters,
-                table_key=table_key,
-                artifact_name_contains=artifact_name_contains,
-                include_summary=include_summary,
-                config_keys=config_keys,
-                missing=missing,
-                max_workers=max_workers,
-                use_graphql=use_graphql,
-                graphql_filters=graphql_filters,
-                graphql_per_page=graphql_per_page,
-            )
-
-        payload = store.load()
-        cached_include_summary = payload.get("include_summary", False)
-        if cached_include_summary != include_summary:
-            raise ValueError(
-                "Cached table data was saved with "
-                f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
-                "Refresh the cache to change this."
-            )
-        records = [record for record in payload["records"] if matches_filter(record, filters)]
-        return _select_record_configs(records, config_keys)
+        return pd.json_normalize(select_record_configs(records, config_keys), sep=".")
 
     def table_dataframe(
         self,
@@ -230,35 +72,47 @@ class WandbRunCache:
         graphql_per_page: int = 500,
         config_keys: Sequence[str] | None = None,
     ) -> pd.DataFrame:
-        config_keys = _normalize_config_keys(config_keys)
-        store = self._table_store(table_key=table_key, artifact_name_contains=artifact_name_contains)
+        config_keys = normalize_config_keys(config_keys)
+        store = self._table_store(
+            filters=filters,
+            table_key=table_key,
+            artifact_name_contains=artifact_name_contains,
+            include_summary=include_summary,
+            use_graphql=use_graphql,
+            graphql_filters=graphql_filters,
+            config_keys=config_keys,
+        )
+
         if refresh_cache or not store.exists():
-            self.refresh_table(
+            metadata = self._metadata_records(
                 filters=filters,
-                table_key=table_key,
-                artifact_name_contains=artifact_name_contains,
+                refresh_cache=refresh_cache,
                 include_summary=include_summary,
-                config_keys=config_keys,
-                missing=missing,
-                max_workers=max_workers,
                 use_graphql=use_graphql,
                 graphql_filters=graphql_filters,
                 graphql_per_page=graphql_per_page,
             )
-
-        payload = store.load()
-        cached_include_summary = payload.get("include_summary", False)
-        if cached_include_summary != include_summary:
-            raise ValueError(
-                "Cached table data was saved with "
-                f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
-                "Refresh the cache to change this."
+            records = download_tables_from_metadata(
+                project=self.project,
+                metadata_records=select_record_configs(metadata, config_keys),
+                table_key=table_key,
+                artifact_name_contains=artifact_name_contains,
+                missing=missing,
+                max_workers=max_workers,
             )
-        df = pd.DataFrame.from_records(payload["records"])
-        if df.empty:
-            return df
+            store.save(
+                project=self.project,
+                source_filters=filters,
+                table_key=table_key,
+                artifact_name_contains=artifact_name_contains,
+                config_keys=config_keys,
+                include_summary=include_summary,
+                records=records,
+            )
+        else:
+            records = store.load()["records"]
 
-        return _flatten_config_column(df, config_keys)
+        return flatten_config_column(pd.DataFrame.from_records(records), config_keys)
 
     def history_dataframe(
         self,
@@ -275,28 +129,33 @@ class WandbRunCache:
         graphql_per_page: int = 500,
         config_keys: Sequence[str] | None = None,
     ) -> pd.DataFrame:
-        if max_workers < 1:
-            raise ValueError("max_workers must be >= 1")
-        if samples < 1:
-            raise ValueError("samples must be >= 1")
+        config_keys = normalize_config_keys(config_keys)
+        selected_history_keys = history_keys(keys=keys, x_axis=x_axis)
+        store = self._history_store(
+            filters=filters,
+            keys=selected_history_keys,
+            samples=samples,
+            x_axis=x_axis,
+            stream=stream,
+            include_summary=include_summary,
+            use_graphql=use_graphql,
+            graphql_filters=graphql_filters,
+            config_keys=config_keys,
+        )
 
-        config_keys = _normalize_config_keys(config_keys)
-        history_keys = _history_keys(keys=keys, x_axis=x_axis)
-        store = self._history_store(keys=history_keys, samples=samples, x_axis=x_axis, stream=stream)
         if refresh_cache or not store.exists():
-            metadata_records = self._fetch_metadata_records(
+            metadata = self._metadata_records(
                 filters=filters,
+                refresh_cache=refresh_cache,
                 include_summary=include_summary,
                 use_graphql=use_graphql,
                 graphql_filters=graphql_filters,
                 graphql_per_page=graphql_per_page,
             )
-            history_metadata_records = _select_record_configs(metadata_records, config_keys)
-            self._save_metadata(filters=filters, include_summary=include_summary, records=metadata_records)
-            records = _download_histories_from_metadata(
+            records = download_histories_from_metadata(
                 project=self.project,
-                metadata_records=history_metadata_records,
-                keys=history_keys,
+                metadata_records=select_record_configs(metadata, config_keys),
+                keys=selected_history_keys,
                 samples=samples,
                 x_axis=x_axis,
                 stream=stream,
@@ -305,67 +164,53 @@ class WandbRunCache:
             store.save(
                 project=self.project,
                 source_filters=filters,
-                keys=history_keys,
+                keys=selected_history_keys,
                 samples=samples,
                 x_axis=x_axis,
                 stream=stream,
+                config_keys=config_keys,
                 include_summary=include_summary,
                 records=records,
             )
         else:
-            payload = store.load()
-            cached_include_summary = payload.get("include_summary", False)
-            if cached_include_summary != include_summary:
-                raise ValueError(
-                    "Cached history data was saved with "
-                    f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
-                    "Refresh the cache to change this."
-                )
-            records = [record for record in payload["records"] if matches_filter(record, filters)]
+            records = store.load()["records"]
 
         if not records:
             return pd.DataFrame()
-        return _history_records_to_dataframe(records, config_keys)
+        return flatten_config_column(pd.DataFrame.from_records(records), config_keys)
 
-    def _table_store(self, table_key: str, artifact_name_contains: str) -> ParquetTableCacheStore:
-        return ParquetTableCacheStore(
-            table_cache_path(
-                run_cache_path=self.cache_path,
-                table_key=table_key,
-                artifact_name_contains=artifact_name_contains,
-            )
-        )
-
-    def _history_store(
+    def _metadata_records(
         self,
-        keys: Sequence[str] | None,
-        samples: int,
-        x_axis: str,
-        stream: str,
-    ) -> ParquetHistoryCacheStore:
-        return ParquetHistoryCacheStore(
-            history_cache_path(
-                run_cache_path=self.cache_path,
-                keys=keys,
-                samples=samples,
-                x_axis=x_axis,
-                stream=stream,
-            )
+        filters: dict[str, Any] | None,
+        refresh_cache: bool,
+        include_summary: bool,
+        use_graphql: bool,
+        graphql_filters: dict[str, Any] | None,
+        graphql_per_page: int,
+    ) -> list[dict[str, Any]]:
+        store = self._metadata_store(
+            filters=filters,
+            include_summary=include_summary,
+            use_graphql=use_graphql,
+            graphql_filters=graphql_filters,
         )
+        if not refresh_cache and store.exists():
+            return store.load()["records"]
 
-    def _load_metadata(self, include_summary: bool) -> list[dict[str, Any]]:
-        if not self.store.exists():
-            raise ValueError("Table cache stores metadata separately, but the run metadata cache is missing.")
-
-        payload = self.store.load()
-        cached_include_summary = payload.get("include_summary", False)
-        if cached_include_summary != include_summary:
-            raise ValueError(
-                "Cached run metadata was saved with "
-                f"include_summary={cached_include_summary}; requested include_summary={include_summary}. "
-                "Refresh the cache to change this."
-            )
-        return payload["records"]
+        records = self._fetch_metadata_records(
+            filters=filters,
+            include_summary=include_summary,
+            use_graphql=use_graphql,
+            graphql_filters=graphql_filters,
+            graphql_per_page=graphql_per_page,
+        )
+        store.save(
+            project=self.project,
+            source_filters=filters,
+            include_summary=include_summary,
+            records=records,
+        )
+        return records
 
     def _fetch_metadata_records(
         self,
@@ -384,293 +229,98 @@ class WandbRunCache:
             )
             return [record for record in records if matches_filter(record, filters)]
 
-        runs = self._fetch_runs(filters=filters)
-        return [serialize_run_metadata(run, include_summary=include_summary) for run in runs]
+        return [
+            serialize_run_metadata(run, include_summary=include_summary)
+            for run in self._api().runs(self.project, filters=filters or {})
+        ]
+
+    def _metadata_cache_path(
+        self,
+        filters: dict[str, Any] | None,
+        include_summary: bool,
+        use_graphql: bool,
+        graphql_filters: dict[str, Any] | None,
+    ) -> Path:
+        return run_metadata_cache_path(
+            self.cache_path,
+            project=self.project,
+            filters=filters,
+            include_summary=include_summary,
+            use_graphql=use_graphql,
+            graphql_filters=graphql_filters,
+        )
+
+    def _metadata_store(
+        self,
+        filters: dict[str, Any] | None,
+        include_summary: bool,
+        use_graphql: bool,
+        graphql_filters: dict[str, Any] | None,
+    ) -> ParquetRunCacheStore:
+        return ParquetRunCacheStore(
+            self._metadata_cache_path(
+                filters=filters,
+                include_summary=include_summary,
+                use_graphql=use_graphql,
+                graphql_filters=graphql_filters,
+            )
+        )
+
+    def _table_store(
+        self,
+        filters: dict[str, Any] | None,
+        table_key: str,
+        artifact_name_contains: str,
+        include_summary: bool,
+        use_graphql: bool,
+        graphql_filters: dict[str, Any] | None,
+        config_keys: Sequence[str] | None,
+    ) -> ParquetTableCacheStore:
+        return ParquetTableCacheStore(
+            table_cache_path(
+                run_cache_path=self._metadata_cache_path(
+                    filters=filters,
+                    include_summary=include_summary,
+                    use_graphql=use_graphql,
+                    graphql_filters=graphql_filters,
+                ),
+                table_key=table_key,
+                artifact_name_contains=artifact_name_contains,
+                config_keys=config_keys,
+            )
+        )
+
+    def _history_store(
+        self,
+        filters: dict[str, Any] | None,
+        keys: Sequence[str] | None,
+        samples: int,
+        x_axis: str,
+        stream: str,
+        include_summary: bool,
+        use_graphql: bool,
+        graphql_filters: dict[str, Any] | None,
+        config_keys: Sequence[str] | None,
+    ) -> ParquetHistoryCacheStore:
+        return ParquetHistoryCacheStore(
+            history_cache_path(
+                run_cache_path=self._metadata_cache_path(
+                    filters=filters,
+                    include_summary=include_summary,
+                    use_graphql=use_graphql,
+                    graphql_filters=graphql_filters,
+                ),
+                keys=keys,
+                samples=samples,
+                x_axis=x_axis,
+                stream=stream,
+                config_keys=config_keys,
+            )
+        )
 
     def _api(self):
-        if self._api_client is not None:
-            return self._api_client
+        if self._api_client is None:
+            import wandb
 
-        import wandb
-
-        self._api_client = wandb.Api()
+            self._api_client = wandb.Api()
         return self._api_client
-
-
-def _normalize_config_keys(config_keys: Sequence[str] | None) -> list[str]:
-    if config_keys is None:
-        return []
-
-    if isinstance(config_keys, str):
-        raw_keys = [config_keys]
-    else:
-        raw_keys = list(config_keys)
-
-    keys: list[str] = []
-    for key in raw_keys:
-        if not isinstance(key, str):
-            raise TypeError("config_keys must contain strings")
-        key = key.removeprefix("config.")
-        if not key:
-            raise ValueError("config_keys cannot contain empty strings")
-        if key not in keys:
-            keys.append(key)
-    return keys
-
-
-def _select_record_configs(
-    records: list[dict[str, Any]],
-    config_keys: Sequence[str] | None,
-) -> list[dict[str, Any]]:
-    config_keys = _normalize_config_keys(config_keys)
-
-    selected_records = []
-    for record in records:
-        selected_record = dict(record)
-        selected_config = _select_config_keys(record.get("config"), config_keys)
-        if selected_config:
-            selected_record["config"] = selected_config
-        else:
-            selected_record.pop("config", None)
-        selected_records.append(selected_record)
-    return selected_records
-
-
-def _select_config_keys(config: Any, config_keys: Sequence[str]) -> dict[str, Any]:
-    config = dict(config or {}) if isinstance(config, dict) else {}
-    selected: dict[str, Any] = {}
-    for key in config_keys:
-        if key in config:
-            selected[key] = config[key]
-            continue
-
-        parts = key.split(".")
-        found, value = _read_nested_config(config, parts)
-        if found:
-            _write_nested_config(selected, parts, value)
-    return selected
-
-
-def _read_nested_config(config: dict[str, Any], parts: Sequence[str]) -> tuple[bool, Any]:
-    value: Any = config
-    for part in parts:
-        if not isinstance(value, dict) or part not in value:
-            return False, None
-        value = value[part]
-    return True, value
-
-
-def _write_nested_config(config: dict[str, Any], parts: Sequence[str], value: Any) -> None:
-    target = config
-    for part in parts[:-1]:
-        nested = target.get(part)
-        if not isinstance(nested, dict):
-            nested = {}
-            target[part] = nested
-        target = nested
-    target[parts[-1]] = value
-
-
-def _flatten_config_column(df: pd.DataFrame, config_keys: Sequence[str] | None = None) -> pd.DataFrame:
-    if "config" not in df.columns:
-        return df
-
-    config_keys = _normalize_config_keys(config_keys)
-    if not config_keys:
-        return df.drop(columns=["config"])
-
-    configs = [_select_config_keys(config, config_keys) for config in df["config"].tolist()]
-    config_df = pd.json_normalize(configs, sep=".").add_prefix("config.")
-    config_df.index = df.index
-    return pd.concat([df.drop(columns=["config"]), config_df], axis=1)
-
-
-def serialize_run_metadata(run: Any, include_summary: bool = False) -> dict[str, Any]:
-    record = {
-        "run_id": to_jsonable(run.id),
-        "run_name": to_jsonable(run.name),
-        "run_state": to_jsonable(run.state),
-        "run_group": to_jsonable(run.group),
-        "run_tags": to_jsonable(list(run.tags)),
-        "run_created_at": to_jsonable(run.created_at),
-        "config": to_jsonable(dict(run.config)),
-    }
-    if include_summary:
-        record["summary"] = to_jsonable(dict(run.summary))
-    return record
-
-
-def get_run_table(
-    run: Any,
-    table_key: str,
-    artifact_name_contains: str,
-    missing: str,
-) -> Any | None:
-    if missing not in {"raise", "skip"}:
-        raise ValueError("missing must be 'raise' or 'skip'")
-
-    artifacts = [
-        artifact
-        for artifact in run.logged_artifacts()
-        if artifact.type == "run_table" and artifact_name_contains in artifact.name and "describe" not in artifact.name
-    ]
-    if not artifacts:
-        if missing == "skip":
-            return None
-        raise ValueError(f"No table artifact matching {artifact_name_contains!r} found for run {run.id}")
-
-    table = artifacts[-1].get(table_key)
-    if table is None:
-        if missing == "skip":
-            return None
-        raise ValueError(f"No table key {table_key!r} found in artifact {artifacts[-1].name!r} for run {run.id}")
-    return table
-
-
-def download_tables_from_metadata(
-    project: str,
-    metadata_records: list[dict[str, Any]],
-    table_key: str,
-    artifact_name_contains: str,
-    missing: str,
-    max_workers: int,
-) -> list[dict[str, Any]]:
-    tasks = [
-        {
-            "project": project,
-            "run_id": metadata["run_id"],
-            "metadata": metadata,
-            "table_key": table_key,
-            "artifact_name_contains": artifact_name_contains,
-            "missing": missing,
-        }
-        for metadata in metadata_records
-    ]
-
-    table_records: list[dict[str, Any]] = []
-    if max_workers == 1:
-        for task in tasks:
-            table_records.extend(download_run_table_from_wandb(task))
-    else:
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            for run_records in executor.map(download_run_table_from_wandb, tasks):
-                table_records.extend(run_records)
-    return table_records
-
-
-def download_run_table_from_wandb(task: dict[str, Any]) -> list[dict[str, Any]]:
-    import wandb
-
-    api = wandb.Api()
-    run = api.run(f"{task['project']}/{task['run_id']}")
-    table = get_run_table(
-        run,
-        table_key=task["table_key"],
-        artifact_name_contains=task["artifact_name_contains"],
-        missing=task["missing"],
-    )
-    if table is None:
-        return []
-    return serialize_table_rows(metadata=task["metadata"], table=table)
-
-
-def serialize_table_rows(metadata: dict[str, Any], table: Any) -> list[dict[str, Any]]:
-    conflicts = sorted(set(table.columns) & _metadata_column_names(metadata))
-    if conflicts:
-        raise ValueError(f"Table columns conflict with run metadata columns: {conflicts}")
-
-    records = []
-    for row_values in table.data:
-        row = {column: to_jsonable(value) for column, value in zip(table.columns, row_values)}
-        row.update(metadata)
-        records.append(row)
-    return records
-
-
-def _history_keys(keys: Sequence[str] | None, x_axis: str) -> list[str] | None:
-    if keys is None:
-        return None
-
-    history_keys = list(dict.fromkeys(keys))
-    if x_axis not in history_keys:
-        history_keys.insert(0, x_axis)
-    return history_keys
-
-
-def _history_records_to_dataframe(
-    records: list[dict[str, Any]],
-    config_keys: Sequence[str] | None = None,
-) -> pd.DataFrame:
-    df = pd.DataFrame.from_records(records)
-    return _flatten_config_column(df, config_keys)
-
-
-def _metadata_column_names(metadata: dict[str, Any]) -> set[str]:
-    columns = set(metadata)
-    columns.add("config")
-    return columns
-
-
-def _download_histories_from_metadata(
-    project: str,
-    metadata_records: list[dict[str, Any]],
-    keys: Sequence[str] | None,
-    samples: int,
-    x_axis: str,
-    stream: str,
-    max_workers: int,
-) -> list[dict[str, Any]]:
-    tasks = [
-        {
-            "project": project,
-            "run_id": metadata["run_id"],
-            "metadata": metadata,
-            "keys": list(keys) if keys is not None else None,
-            "samples": samples,
-            "x_axis": x_axis,
-            "stream": stream,
-        }
-        for metadata in metadata_records
-    ]
-
-    history_records: list[dict[str, Any]] = []
-    if max_workers == 1:
-        for task in tasks:
-            history_records.extend(_download_run_history_from_wandb(task))
-    else:
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            for run_records in executor.map(_download_run_history_from_wandb, tasks):
-                history_records.extend(run_records)
-    return history_records
-
-
-def _download_run_history_from_wandb(task: dict[str, Any]) -> list[dict[str, Any]]:
-    import wandb
-
-    api = wandb.Api()
-    run = api.run(f"{task['project']}/{task['run_id']}")
-    history = run.history(
-        keys=task["keys"],
-        samples=task["samples"],
-        x_axis=task["x_axis"],
-        pandas=True,
-        stream=task["stream"],
-    )
-    return _serialize_history_rows(metadata=task["metadata"], history=history)
-
-
-def _serialize_history_rows(metadata: dict[str, Any], history: pd.DataFrame) -> list[dict[str, Any]]:
-    if history.empty:
-        return []
-
-    conflicts = sorted(set(history.columns) & _metadata_column_names(metadata))
-    if conflicts:
-        raise ValueError(f"History columns conflict with run metadata columns: {conflicts}")
-
-    history = history.where(pd.notna(history), None)
-    records = []
-    for row in history.to_dict(orient="records"):
-        record = {column: to_jsonable(value) for column, value in row.items()}
-        record.update(metadata)
-        records.append(record)
-    return records

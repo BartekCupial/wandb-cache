@@ -24,13 +24,45 @@ def default_cache_path(cache_dir: str | Path, cache: str | Path | None, project:
     return Path(cache_dir) / f"{safe_name}.runs.parquet"
 
 
-def table_cache_path(run_cache_path: str | Path, table_key: str, artifact_name_contains: str) -> Path:
+def run_metadata_cache_path(
+    base_cache_path: str | Path,
+    *,
+    project: str,
+    filters: dict[str, Any] | None,
+    include_summary: bool,
+    use_graphql: bool,
+    graphql_filters: dict[str, Any] | None,
+) -> Path:
+    base_cache_path = Path(base_cache_path)
+    base_name = base_cache_path.name.removesuffix(".runs.parquet")
+    base_name = base_name.removesuffix(base_cache_path.suffix)
+    spec = {
+        "filters": to_jsonable(filters or {}),
+        "graphql_filters": to_jsonable(graphql_filters or {}) if use_graphql else {},
+        "include_summary": include_summary,
+        "project": project,
+        "use_graphql": use_graphql,
+    }
+    return base_cache_path.with_name(f"{base_name}.{_cache_digest(spec)}.runs.parquet")
+
+
+def table_cache_path(
+    run_cache_path: str | Path,
+    table_key: str,
+    artifact_name_contains: str,
+    config_keys: Sequence[str] | None = None,
+) -> Path:
     run_cache_path = Path(run_cache_path)
     base_name = run_cache_path.name
     base_name = base_name.removesuffix(".runs.parquet")
     safe_table_key = _safe_cache_token(table_key)
     safe_artifact = _safe_cache_token(artifact_name_contains)
-    return run_cache_path.with_name(f"{base_name}.{safe_table_key}.{safe_artifact}.table.parquet")
+    spec = {
+        "artifact_name_contains": artifact_name_contains,
+        "config_keys": list(config_keys or []),
+        "table_key": table_key,
+    }
+    return run_cache_path.with_name(f"{base_name}.{safe_table_key}.{safe_artifact}.{_cache_digest(spec)}.table.parquet")
 
 
 def history_cache_path(
@@ -39,23 +71,29 @@ def history_cache_path(
     samples: int,
     x_axis: str,
     stream: str,
+    config_keys: Sequence[str] | None = None,
 ) -> Path:
     run_cache_path = Path(run_cache_path)
     base_name = run_cache_path.name
     base_name = base_name.removesuffix(".runs.parquet")
     spec = {
+        "config_keys": list(config_keys or []),
         "keys": list(keys or []),
         "samples": samples,
         "stream": stream,
         "x_axis": x_axis,
     }
-    digest = hashlib.sha1(json.dumps(spec, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     safe_x_axis = _safe_cache_token(x_axis)
-    return run_cache_path.with_name(f"{base_name}.{safe_x_axis}.{digest}.history.parquet")
+    return run_cache_path.with_name(f"{base_name}.{safe_x_axis}.{_cache_digest(spec)}.history.parquet")
 
 
 def _safe_cache_token(value: str) -> str:
     return value.strip("/").replace("/", "__").replace(" ", "_")
+
+
+def _cache_digest(value: dict[str, Any]) -> str:
+    canonical = json.dumps(to_jsonable(value), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 def _encode_metadata(metadata: dict[str, Any]) -> dict[bytes, bytes]:
@@ -155,6 +193,7 @@ class ParquetTableCacheStore:
         source_filters: dict[str, Any] | None,
         table_key: str,
         artifact_name_contains: str,
+        config_keys: Sequence[str] | None,
         include_summary: bool,
         records: list[dict[str, Any]],
     ) -> None:
@@ -165,6 +204,7 @@ class ParquetTableCacheStore:
             "source_filters": to_jsonable(source_filters or {}),
             "table_key": table_key,
             "artifact_name_contains": artifact_name_contains,
+            "config_keys": to_jsonable(list(config_keys or [])),
             "include_summary": include_summary,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "row_count": len(records),
@@ -194,6 +234,7 @@ class ParquetHistoryCacheStore:
         samples: int,
         x_axis: str,
         stream: str,
+        config_keys: Sequence[str] | None,
         include_summary: bool,
         records: list[dict[str, Any]],
     ) -> None:
@@ -206,6 +247,7 @@ class ParquetHistoryCacheStore:
             "samples": samples,
             "x_axis": x_axis,
             "stream": stream,
+            "config_keys": to_jsonable(list(config_keys or [])),
             "include_summary": include_summary,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "row_count": len(records),

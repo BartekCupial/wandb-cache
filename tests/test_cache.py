@@ -4,6 +4,7 @@ from wandb_cache.cache import (
     ParquetRunCacheStore,
     default_cache_path,
     history_cache_path,
+    run_metadata_cache_path,
     table_cache_path,
 )
 
@@ -24,24 +25,76 @@ def test_default_cache_path_accepts_named_cache_and_explicit_file(tmp_path: Path
     )
 
 
+def test_run_metadata_cache_path_depends_on_request() -> None:
+    base_path = Path(".wandb_cache/public__cleanrl_sac.runs.parquet")
+
+    filtered_path = run_metadata_cache_path(
+        base_path,
+        project="entity/project",
+        filters={"tags": "pr-424"},
+        include_summary=False,
+        use_graphql=True,
+        graphql_filters=None,
+    )
+
+    assert filtered_path == run_metadata_cache_path(
+        base_path,
+        project="entity/project",
+        filters={"tags": "pr-424"},
+        include_summary=False,
+        use_graphql=True,
+        graphql_filters=None,
+    )
+    assert filtered_path != run_metadata_cache_path(
+        base_path,
+        project="entity/project",
+        filters={"tags": "other"},
+        include_summary=False,
+        use_graphql=True,
+        graphql_filters=None,
+    )
+    assert filtered_path.name.startswith("public__cleanrl_sac.")
+    assert filtered_path.name.endswith(".runs.parquet")
+
+
 def test_table_and_history_cache_paths_are_stable() -> None:
     run_cache_path = Path(".wandb_cache/public__cleanrl_sac.runs.parquet")
 
-    assert table_cache_path(run_cache_path, table_key="Table Name", artifact_name_contains="TableName") == Path(
-        ".wandb_cache/public__cleanrl_sac.Table_Name.TableName.table.parquet"
+    table_path = table_cache_path(
+        run_cache_path,
+        table_key="Table Name",
+        artifact_name_contains="TableName",
+        config_keys=["env_id"],
     )
+    assert table_path == table_cache_path(
+        run_cache_path,
+        table_key="Table Name",
+        artifact_name_contains="TableName",
+        config_keys=["env_id"],
+    )
+    assert table_path != table_cache_path(
+        run_cache_path,
+        table_key="Table Name",
+        artifact_name_contains="TableName",
+        config_keys=["seed"],
+    )
+    assert table_path.name.startswith("public__cleanrl_sac.Table_Name.TableName.")
+    assert table_path.name.endswith(".table.parquet")
+
     assert history_cache_path(
         run_cache_path,
         keys=["global_step", "charts/episodic_return"],
         samples=10_000,
         x_axis="global_step",
         stream="default",
+        config_keys=["env_id"],
     ) == history_cache_path(
         run_cache_path,
         keys=["global_step", "charts/episodic_return"],
         samples=10_000,
         x_axis="global_step",
         stream="default",
+        config_keys=["env_id"],
     )
 
 
