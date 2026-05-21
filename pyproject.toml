@@ -29,6 +29,7 @@ dev = [
     "isort",
     "matplotlib",
     "pre-commit",
+    "pytest",
     "ruff",
     "twine",
 ]

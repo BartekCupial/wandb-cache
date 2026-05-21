@@ -34,6 +34,12 @@ Install pre-commit hooks for formatting and linting:
 pre-commit install
 ```
 
+Run the offline test suite:
+
+```bash
+pytest
+```
+
 ## Metadata
 
 ```python
