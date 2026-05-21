@@ -78,7 +78,23 @@ def _decode_metadata(metadata: dict[bytes, bytes] | None) -> dict[str, Any]:
 def _records_to_table(records: list[dict[str, Any]]) -> pa.Table:
     if not records:
         return pa.table({"_empty": pa.array([], type=pa.int8())})
-    return pa.Table.from_pylist(records)
+    return pa.Table.from_pylist(_drop_empty_dict_columns(records))
+
+
+def _drop_empty_dict_columns(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keys = {key for record in records for key in record}
+    empty_dict_keys = {key for key in keys if all(record.get(key) == {} for record in records if key in record)}
+    if not empty_dict_keys:
+        return records
+
+    cleaned_records = []
+    for record in records:
+        cleaned_record = dict(record)
+        for key in empty_dict_keys:
+            if cleaned_record.get(key) == {}:
+                cleaned_record.pop(key)
+        cleaned_records.append(cleaned_record)
+    return cleaned_records
 
 
 def _write_parquet(path: Path, records: list[dict[str, Any]], metadata: dict[str, Any]) -> None:

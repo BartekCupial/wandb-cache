@@ -40,14 +40,15 @@ pre-commit install
 from wandb_cache import WandbRunCache
 
 cache = WandbRunCache(
-    project="ideas-ncbr/plan-crl",
-    cache="self_refinement_generic_retry",
+    project="openrlbenchmark/cleanrl",
+    cache="cleanrl_sac",
 )
 
 df = cache.dataframe(
-    filters={"tags": "2026_05_13_self_refinement_generic_retry_13x4"},
+    filters={"$and": [{"tags": "pr-424"}, {"config.exp_name": "sac_continuous_action"}]},
+    graphql_filters={"tags": "pr-424"},
     refresh_cache=True,
-    config_keys=["env_name", "seed"],
+    config_keys=["env_id", "exp_name", "seed"],
     use_graphql=True,
 )
 ```
@@ -58,10 +59,11 @@ because run config would otherwise be copied into every row. Pass `config_keys` 
 fields you need:
 
 ```python
-df = cache.table_dataframe(
-    filters={"tags": "2026_05_13_self_refinement_generic_retry_13x4"},
+df = cache.dataframe(
+    filters={"$and": [{"tags": "pr-424"}, {"config.exp_name": "sac_continuous_action"}]},
+    graphql_filters={"tags": "pr-424"},
     refresh_cache=True,
-    config_keys=["env_name", "optimizer.lr"],
+    config_keys=["env_id", "seed"],
 )
 ```
 
@@ -76,18 +78,16 @@ rewrite the Parquet file with the new config selection.
 from wandb_cache import WandbRunCache
 
 cache = WandbRunCache(
-    project="ideas-ncbr/plan-crl",
-    cache="self_refinement_generic_retry",
+    project="carey/table-test",
+    cache="table_test",
 )
 
 df = cache.table_dataframe(
-    filters={"tags": "2026_05_13_self_refinement_generic_retry_13x4"},
     refresh_cache=True,
-    table_key="collect/episode_log",
-    artifact_name_contains="episode_log",
-    missing="skip",
-    max_workers=16,
-    config_keys=["env_name"],
+    table_key="Table Name",
+    artifact_name_contains="TableName",
+    missing="raise",
+    max_workers=4,
     use_graphql=True,
 )
 ```
@@ -98,22 +98,22 @@ df = cache.table_dataframe(
 from wandb_cache import WandbRunCache
 
 cache = WandbRunCache(
-    project="jiayipan/TinyZero",
-    cache="tinyzero_core",
+    project="openrlbenchmark/cleanrl",
+    cache="cleanrl_sac",
 )
 
 df = cache.history_dataframe(
-    filters=None,
+    filters={"$and": [{"tags": "pr-424"}, {"config.exp_name": "sac_continuous_action"}]},
+    graphql_filters={"tags": "pr-424"},
     refresh_cache=True,
     keys=[
-        "_step",
-        "critic/score/mean",
-        "response_length/mean",
-        "timing_s/step",
+        "global_step",
+        "charts/episodic_return",
     ],
     samples=10_000,
-    x_axis="_step",
-    max_workers=16,
+    x_axis="global_step",
+    max_workers=8,
+    config_keys=["env_id", "exp_name", "seed"],
     use_graphql=True,
 )
 ```
@@ -121,40 +121,41 @@ df = cache.history_dataframe(
 ## Examples
 
 ```bash
-python examples/cache_metadata.py
-python examples/cache_table_summary.py
-python examples/benchmark_speed.py
-python examples/plot_history.py
+python examples/metadata.py
+python examples/history.py
+python examples/table.py
+python examples/benchmark.py
 ```
 
-The metadata, table, and benchmark examples use the `ideas-ncbr/plan-crl` project and the `2026_05_13_self_refinement_generic_retry_13x4` tag. The history plot uses the public `jiayipan/TinyZero` project. They expect normal W&B auth through `WANDB_API_KEY` or `~/.netrc`.
+The metadata and history examples use the CleanRL SAC experiment from
+`openrlbenchmark/cleanrl`, matching the [CleanRL SAC docs](https://docs.cleanrl.dev/rl-algorithms/sac/#experiment-results)
+filter for `tag=pr-424` and `config.exp_name=sac_continuous_action`. The history example plots
+`charts/episodic_return` with a standard-error shaded band across seeds.
+
+The benchmark example uses the broader CleanRL `tag=pr-424` run set, which currently has enough public
+runs to make the GraphQL speedup visible without requiring a private W&B project.
+
+The table example uses the [W&B Tables walkthrough](https://docs.wandb.ai/models/tables/tables-walkthrough)
+project `carey/table-test`. It is small, but useful as a stable smoke test for downloading run-table
+artifacts into Parquet. All examples expect normal W&B auth through `WANDB_API_KEY` or `~/.netrc`.
 
 ## Benchmarking results
 
 Command:
 
 ```bash
-python examples/benchmark_speed.py
+python examples/benchmark.py
 ```
 
-Run on `2026_05_13_self_refinement_generic_retry_13x4` in `ideas-ncbr/plan-crl`: 169 runs and 20,662 table rows.
+Run on the public CleanRL `tag=pr-424` run set in `openrlbenchmark/cleanrl`: 198 runs.
 
 **Metadata Benchmarks**
 Comparing standard W&B API discovery versus GraphQL discovery, and network downloads versus local Parquet cache reads:
 
 | Method | Network (refresh=True) | Cached (refresh=False) |
 | :--- | ---: | ---: |
-| **GraphQL** | 1.02s | 0.09s |
-| **W&B API** | 45.06s | 0.12s |
-
-**Table Benchmarks**
-Table refresh timings include metadata selection, W&B table artifact downloads, table row serialization, and Parquet cache saves. Tests were run using 32 parallel workers (`max_workers=32`):
-
-| Method | Network (refresh=True) | Cached (refresh=False) |
-| :--- | ---: | ---: |
-| **GraphQL** | 14.03s | 0.96s |
-| **W&B API** | 57.32s | 1.13s |
-
+| **GraphQL** | 0.78s | 0.02s |
+| **W&B API** | 30.19s | 0.01s |
 
 ## Roadmap
 
