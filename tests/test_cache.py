@@ -2,6 +2,7 @@ from pathlib import Path
 
 from wandb_cache.cache import (
     ParquetRunCacheStore,
+    ParquetTableCacheStore,
     default_cache_path,
     history_cache_path,
     run_metadata_cache_path,
@@ -131,4 +132,27 @@ def test_run_cache_roundtrip_drops_all_empty_dict_columns(tmp_path: Path) -> Non
             "run_tags": ["example"],
             "run_created_at": "2026-05-21T00:00:00Z",
         }
+    ]
+
+
+def test_table_cache_roundtrip_preserves_union_of_record_columns(tmp_path: Path) -> None:
+    store = ParquetTableCacheStore(tmp_path / "table.parquet")
+    store.save(
+        project="entity/project",
+        source_filters={"tags": "mixed-envs"},
+        table_key="collect/episode_log",
+        artifact_name_contains="episode_log",
+        config_keys=None,
+        include_summary=False,
+        records=[
+            {"run_id": "code-run", "solved": 1.0},
+            {"run_id": "arc-run", "task_success": 1.0},
+        ],
+    )
+
+    payload = store.load()
+
+    assert payload["records"] == [
+        {"run_id": "code-run", "solved": 1.0, "task_success": None},
+        {"run_id": "arc-run", "solved": None, "task_success": 1.0},
     ]

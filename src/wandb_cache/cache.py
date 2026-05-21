@@ -116,7 +116,10 @@ def _decode_metadata(metadata: dict[bytes, bytes] | None) -> dict[str, Any]:
 def _records_to_table(records: list[dict[str, Any]]) -> pa.Table:
     if not records:
         return pa.table({"_empty": pa.array([], type=pa.int8())})
-    return pa.Table.from_pylist(_drop_empty_dict_columns(records))
+
+    records = _drop_empty_dict_columns(records)
+    keys = list(dict.fromkeys(key for record in records for key in record))
+    return pa.Table.from_pylist([{key: record.get(key) for key in keys} for record in records])
 
 
 def _drop_empty_dict_columns(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
