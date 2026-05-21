@@ -1,5 +1,7 @@
 # wandb-cache
 
+[![CI](https://github.com/BartekCupial/wandb-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/BartekCupial/wandb-cache/actions/workflows/ci.yml)
+
 Small cache layer for W&B run metadata and table artifacts.
 
 If you frequently pull W&B data to build pandas DataFrames for local analysis, plotting, or paper figures, you have likely hit bottlenecks with the slow `wandb` runs API. The standard `wandb.Api().runs(...)` call is often slow because it requests a massive data fragment for every run (including system metrics, history keys, and notes) and struggles with expensive server-side filtering on nested `config` fields.
