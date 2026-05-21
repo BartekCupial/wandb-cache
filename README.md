@@ -2,21 +2,31 @@
 
 [![CI](https://github.com/BartekCupial/wandb-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/BartekCupial/wandb-cache/actions/workflows/ci.yml)
 
-Small cache layer for W&B run metadata and table artifacts.
+Fast local caching for W&B run metadata, history metrics, and table artifacts.
 
-If you frequently pull W&B data to build pandas DataFrames for local analysis, plotting, or paper figures, you have likely hit bottlenecks with the slow `wandb` runs API. The standard `wandb.Api().runs(...)` call is often slow because it requests a massive data fragment for every run (including system metrics, history keys, and notes) and struggles with expensive server-side filtering on nested `config` fields.
+`wandb-cache` is for the very common research workflow where you pull W&B data into pandas for
+analysis, plotting, sweeps, or paper figures. The standard `wandb.Api().runs(...)` path can be slow because
+it requests a large GraphQL fragment for every run and can struggle with expensive server-side filtering on
+nested `config` fields.
 
-`wandb-cache` solves this by fetching data through a custom, lightweight GraphQL query and caching it in fast Parquet files.
+This library uses a small custom GraphQL query for run discovery, filters locally when that is faster, and
+caches the result as Parquet. Once cached, rebuilding a DataFrame is usually a local disk read.
 
-The intended workflow is:
+```text
+openrlbenchmark/cleanrl, tag=pr-424, 198 runs
 
-1. Fetch a filtered set of runs from W&B.
-2. Save raw-ish metadata and tables locally as Parquet.
-3. Build pandas dataframes from the cache for plotting, summaries, and paper figures.
-
-GraphQL is used by default for run metadata discovery because it is much faster for this use case. The normal W&B runs API is still available with `use_graphql=False`.
+GraphQL refresh: 0.78s
+W&B API refresh: 30.19s
+Cached read:     0.02s
+```
 
 ## Install
+
+From PyPI, once released:
+
+```bash
+pip install wandb-cache
+```
 
 From the repository root:
 
@@ -24,25 +34,15 @@ From the repository root:
 pip install -e .
 ```
 
-For packaging tools:
+For development:
 
 ```bash
 pip install -e ".[dev]"
-```
-
-Install pre-commit hooks for formatting and linting:
-
-```bash
 pre-commit install
-```
-
-Run the offline test suite:
-
-```bash
 pytest
 ```
 
-## Metadata
+## Quick Start
 
 ```python
 from wandb_cache import WandbRunCache
@@ -57,28 +57,35 @@ df = cache.dataframe(
     graphql_filters={"tags": "pr-424"},
     refresh_cache=True,
     config_keys=["env_id", "exp_name", "seed"],
-    use_graphql=True,
 )
+
+print(df[["run_id", "run_name", "config.env_id", "config.seed"]].head())
 ```
+
+Normal W&B auth is used through `WANDB_API_KEY` or `~/.netrc`.
+
+## Config Columns
 
 The run metadata cache keeps the full W&B config. By default, config fields are not copied into returned
 DataFrames or repeated table/history rows. This keeps large table and history Parquet files much smaller
-because run config would otherwise be copied into every row. Pass `config_keys` to include only the config
-fields you need:
+because run config would otherwise be copied into every row.
+
+Pass `config_keys` to include only the config fields you need:
 
 ```python
 df = cache.dataframe(
-    filters={"$and": [{"tags": "pr-424"}, {"config.exp_name": "sac_continuous_action"}]},
-    graphql_filters={"tags": "pr-424"},
+    filters={"tags": "pr-424"},
     refresh_cache=True,
-    config_keys=["env_id", "seed"],
+    config_keys=["env_id", "seed", "llm_actor.engine_args.model_id"],
 )
 ```
 
-Leaving `config_keys` unset omits config columns from DataFrames and table/history row caches. Dotted keys
-select nested config values, and a `config.` prefix is also accepted. When changing `config_keys` for an
-existing table or history cache, use `refresh_cache=True` (or `refresh=True` with the function API) to
-rewrite the Parquet file with the new config selection.
+Dotted keys select nested config values, and a `config.` prefix is also accepted.
+
+Cache filenames include a deterministic hash of the request that created them, including filters, GraphQL
+filters, summary inclusion, and table/history config selections. Changing those inputs creates a separate
+Parquet file instead of reinterpreting an existing cache. Use `refresh_cache=True` when you want to overwrite
+the cache for the same request and pick up new W&B data.
 
 ## Tables
 
@@ -96,7 +103,6 @@ df = cache.table_dataframe(
     artifact_name_contains="TableName",
     missing="raise",
     max_workers=4,
-    use_graphql=True,
 )
 ```
 
@@ -122,7 +128,6 @@ df = cache.history_dataframe(
     x_axis="global_step",
     max_workers=8,
     config_keys=["env_id", "exp_name", "seed"],
-    use_graphql=True,
 )
 ```
 
@@ -145,9 +150,9 @@ runs to make the GraphQL speedup visible without requiring a private W&B project
 
 The table example uses the [W&B Tables walkthrough](https://docs.wandb.ai/models/tables/tables-walkthrough)
 project `carey/table-test`. It is small, but useful as a stable smoke test for downloading run-table
-artifacts into Parquet. All examples expect normal W&B auth through `WANDB_API_KEY` or `~/.netrc`.
+artifacts into Parquet.
 
-## Benchmarking results
+## Benchmark
 
 Command:
 
@@ -157,20 +162,12 @@ python examples/benchmark.py
 
 Run on the public CleanRL `tag=pr-424` run set in `openrlbenchmark/cleanrl`: 198 runs.
 
-**Metadata Benchmarks**
-Comparing standard W&B API discovery versus GraphQL discovery, and network downloads versus local Parquet cache reads:
-
-| Method | Network (refresh=True) | Cached (refresh=False) |
+| Method | Network Refresh | Cached Read |
 | :--- | ---: | ---: |
-| **GraphQL** | 0.78s | 0.02s |
-| **W&B API** | 30.19s | 0.01s |
+| GraphQL | 0.78s | 0.02s |
+| W&B API | 30.19s | 0.01s |
 
-## Roadmap
+## Release Status
 
-- [x] **History Tracking:** Add support for downloading, flattening, and caching sampled history metrics.
-- [x] **Inline Metadata:** Inject run configs directly into Parquet rows for faster reads.
-- [x] **Parquet Storage:** Migrate from JSON to Parquets, to speedup loading of the data.
-- [x] **Benchmarking:** Add examples and benchmark the library.
-- [x] **Multiprocessing:** Implement parallel workers to get through massive table downloads faster.
-- [x] **Table Artifacts:** Add full support for downloading, flattening, and caching W&B tables.
-- [x] **GraphQL:** Swap the standard W&B runs API for custom GraphQL to massively speed up metadata fetching.
+`wandb-cache` is early and intentionally small. The current API is useful for metadata, sampled history,
+and table artifacts, but may still change while the first public users kick the tires.
